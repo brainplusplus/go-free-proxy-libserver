@@ -1,22 +1,39 @@
 package freeproxy
 
 import (
+	"context"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-const validationTimeout = 10 * time.Second
-
-// validateProxy tests a proxy against the targetURL.
-func validateProxy(proxy *FreeProxy, targetURL string) bool {
-	if isWebSocketURL(targetURL) {
-		return validateWebSocket(proxy, targetURL)
+// validationTimeout is configurable via PROXY_TIMEOUT env (in seconds, default 3s)
+var validationTimeout = func() time.Duration {
+	if v := os.Getenv("PROXY_TIMEOUT"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
 	}
-	return validateHTTP(proxy, targetURL)
+	return 3 * time.Second
+}()
+
+// validateProxyCtx is the context-aware entry point used by GetProxy workers.
+// When ctx is cancelled (another worker won), in-flight requests are aborted.
+func validateProxyCtx(ctx context.Context, proxy *FreeProxy, targetURL string) bool {
+	if isWebSocketURL(targetURL) {
+		return validateWebSocket(ctx, proxy, targetURL)
+	}
+	return validateHTTP(ctx, proxy, targetURL)
+}
+
+// validateProxy is the context-free convenience wrapper (used in tests / library direct calls)
+func validateProxy(proxy *FreeProxy, targetURL string) bool {
+	return validateProxyCtx(context.Background(), proxy, targetURL)
 }
 
 func isWebSocketURL(u string) bool {
@@ -24,11 +41,15 @@ func isWebSocketURL(u string) bool {
 	return strings.HasPrefix(lower, "ws://") || strings.HasPrefix(lower, "wss://")
 }
 
-func validateHTTP(proxy *FreeProxy, targetURL string) bool {
+func validateHTTP(ctx context.Context, proxy *FreeProxy, targetURL string) bool {
 	proxyURL, err := url.Parse(proxy.ProxyURL())
 	if err != nil {
 		return false
 	}
+
+	// Combine validationTimeout and ctx so whichever fires first wins
+	reqCtx, cancel := context.WithTimeout(ctx, validationTimeout)
+	defer cancel()
 
 	transport := &http.Transport{
 		Proxy:             http.ProxyURL(proxyURL),
@@ -38,13 +59,13 @@ func validateHTTP(proxy *FreeProxy, targetURL string) bool {
 
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   validationTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+		// Do NOT set Timeout here — context handles it
 	}
 
-	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return false
 	}
@@ -57,10 +78,10 @@ func validateHTTP(proxy *FreeProxy, targetURL string) bool {
 	}
 	defer resp.Body.Close()
 
-	return resp.StatusCode >= 200 && resp.StatusCode < 400
+	return resp.StatusCode >= 200 && resp.StatusCode < 500
 }
 
-func validateWebSocket(proxy *FreeProxy, targetURL string) bool {
+func validateWebSocket(ctx context.Context, proxy *FreeProxy, targetURL string) bool {
 	proxyURL, err := url.Parse(proxy.ProxyURL())
 	if err != nil {
 		return false
@@ -71,17 +92,32 @@ func validateWebSocket(proxy *FreeProxy, targetURL string) bool {
 		HandshakeTimeout: validationTimeout,
 	}
 
-	headers := http.Header{}
-	headers.Set("Cache-Control", "no-cache")
+	// Wrap dial in a goroutine so we can honour ctx cancellation
+	type dialResult struct {
+		conn *websocket.Conn
+		resp *http.Response
+		err  error
+	}
 
-	conn, resp, err := dialer.Dial(targetURL, headers)
-	if err != nil {
+	ch := make(chan dialResult, 1)
+	go func() {
+		conn, resp, err := dialer.Dial(targetURL, http.Header{
+			"Cache-Control": []string{"no-cache"},
+		})
+		ch <- dialResult{conn, resp, err}
+	}()
+
+	select {
+	case <-ctx.Done():
 		return false
+	case res := <-ch:
+		if res.err != nil {
+			return false
+		}
+		defer res.conn.Close()
+		if res.resp != nil && res.resp.Body != nil {
+			defer res.resp.Body.Close()
+		}
+		return true
 	}
-	defer conn.Close()
-	if resp != nil && resp.Body != nil {
-		defer resp.Body.Close()
-	}
-
-	return true
 }

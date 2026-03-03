@@ -1,6 +1,7 @@
 package freeproxy
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -13,7 +14,6 @@ import (
 const (
 	DefaultTargetURL = "https://example.com"
 	DefaultTTL       = 30 * time.Minute
-	maxPoolKeys      = 100
 )
 
 // CategorySources maps category codes to their scrape URLs.
@@ -22,10 +22,6 @@ var CategorySources = map[string]string{
 	"UK":  "https://free-proxy-list.net/en/uk-proxy.html",
 	"US":  "https://free-proxy-list.net/en/us-proxy.html",
 	"SSL": "https://free-proxy-list.net/en/ssl-proxy.html",
-}
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
 }
 
 type FreeProxy struct {
@@ -64,12 +60,22 @@ func (p FreeProxyParameter) getTargetURL() string {
 	return p.TargetUrl
 }
 
+// numWorkers returns concurrent worker count:
+//   - categoryCode set   → 2 workers
+//   - categoryCode empty → 2 × number of categories (e.g. 2×4=8)
+func numWorkers(categoryCode string) int {
+	if categoryCode != "" {
+		return 2
+	}
+	return 2 * len(CategorySources)
+}
+
 type proxyPool struct {
 	mu      sync.Mutex
-	sf      singleflight.Group
 	proxies map[string][]FreeProxy
 	expiry  map[string]time.Time
 	ttl     time.Duration
+	sf      singleflight.Group
 }
 
 var defaultPool = &proxyPool{
@@ -78,7 +84,6 @@ var defaultPool = &proxyPool{
 	ttl:     DefaultTTL,
 }
 
-// SetTTL changes the cache TTL globally (call before using the library).
 func SetTTL(d time.Duration) {
 	defaultPool.mu.Lock()
 	defer defaultPool.mu.Unlock()
@@ -94,63 +99,64 @@ func (pp *proxyPool) needsRefresh(key string) bool {
 	return !ok || time.Now().After(exp)
 }
 
-// evictExpired removes expired keys when pool grows too large.
-// Must be called with lock held.
-func (pp *proxyPool) evictExpired() {
-	if len(pp.proxies) <= maxPoolKeys {
-		return
-	}
-	now := time.Now()
-	for k, exp := range pp.expiry {
-		if now.After(exp) {
-			delete(pp.proxies, k)
-			delete(pp.expiry, k)
-		}
-	}
-}
-
-func (pp *proxyPool) load(key string) error {
-	var all []FreeProxy
-	for cat := range CategorySources {
-		list, err := scrape(cat)
-		if err != nil {
-			continue // partial results OK
-		}
-		all = append(all, list...)
-	}
-	if len(all) == 0 {
-		return fmt.Errorf("failed to scrape proxies from any source")
-	}
-	pp.mu.Lock()
-	pp.evictExpired()
-	pp.proxies[key] = all
-	pp.expiry[key] = time.Now().Add(pp.ttl)
-	pp.mu.Unlock()
-	return nil
-}
-
 func (pp *proxyPool) ensureLoaded(key string) error {
 	pp.mu.Lock()
-	needs := pp.needsRefresh(key)
+	needed := pp.needsRefresh(key)
 	pp.mu.Unlock()
 
-	if !needs {
+	if !needed {
 		return nil
 	}
 
-	// singleflight prevents duplicate concurrent scrapes for same key
 	_, err, _ := pp.sf.Do(key, func() (interface{}, error) {
 		pp.mu.Lock()
-		needs := pp.needsRefresh(key)
-		pp.mu.Unlock()
-		if !needs {
+		if !pp.needsRefresh(key) {
+			pp.mu.Unlock()
 			return nil, nil
 		}
-		return nil, pp.load(key)
+		pp.mu.Unlock()
+
+		// Scrape all 4 categories concurrently
+		var (
+			wg  sync.WaitGroup
+			mu  sync.Mutex
+			all []FreeProxy
+		)
+		for cat := range CategorySources {
+			wg.Add(1)
+			go func(c string) {
+				defer wg.Done()
+				list, err := scrape(c)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				all = append(all, list...)
+				mu.Unlock()
+			}(cat)
+		}
+		wg.Wait()
+
+		if len(all) == 0 {
+			return nil, fmt.Errorf("failed to scrape proxies from any source")
+		}
+
+		// Shuffle so concurrent workers pick diverse proxies
+		rand.Shuffle(len(all), func(i, j int) { all[i], all[j] = all[j], all[i] })
+
+		pp.mu.Lock()
+		pp.proxies[key] = all
+		pp.expiry[key] = time.Now().Add(pp.ttl)
+		pp.mu.Unlock()
+
+		return nil, nil
 	})
+
 	return err
 }
 
+// pickRandom picks a random matching proxy and removes it from the pool (O(1) swap-remove).
+// Returns false if no matching proxy is available.
 func (pp *proxyPool) pickRandom(key, categoryCode string) (*FreeProxy, bool) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
@@ -166,11 +172,10 @@ func (pp *proxyPool) pickRandom(key, categoryCode string) (*FreeProxy, bool) {
 		return nil, false
 	}
 
-	ridx := rand.Intn(len(indices))
-	idx := indices[ridx]
+	idx := indices[rand.Intn(len(indices))]
 	proxy := list[idx]
 
-	// Swap-remove O(1)
+	// O(1) swap-remove
 	list[idx] = list[len(list)-1]
 	pp.proxies[key] = list[:len(list)-1]
 
@@ -181,9 +186,8 @@ func (pp *proxyPool) getAll(key, categoryCode string) []FreeProxy {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 
-	list := pp.proxies[key]
-	result := make([]FreeProxy, 0, len(list))
-	for _, p := range list {
+	var result []FreeProxy
+	for _, p := range pp.proxies[key] {
 		if categoryCode == "" || strings.EqualFold(p.CategoryCode, categoryCode) {
 			result = append(result, p)
 		}
@@ -191,7 +195,12 @@ func (pp *proxyPool) getAll(key, categoryCode string) []FreeProxy {
 	return result
 }
 
-// GetProxy returns a single validated working proxy.
+// GetProxy validates proxies concurrently and returns the first working one.
+//
+// Workers: 2 per category (if categoryCode empty → 2×4=8 workers, else 2).
+// First valid proxy wins → context cancels remaining workers immediately.
+// All tested proxies are removed from pool regardless of validity, so the
+// next call receives only untested proxies.
 func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 	targetURL := param.getTargetURL()
 
@@ -199,24 +208,72 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 		return nil, fmt.Errorf("failed to load proxy pool: %w", err)
 	}
 
-	defaultPool.mu.Lock()
-	maxAttempts := len(defaultPool.proxies[targetURL])
-	defaultPool.mu.Unlock()
+	n := numWorkers(param.CategoryCode)
 
-	for i := 0; i < maxAttempts; i++ {
-		proxy, ok := defaultPool.pickRandom(targetURL, param.CategoryCode)
-		if !ok {
-			break
-		}
-		if validateProxy(proxy, targetURL) {
-			return proxy, nil
-		}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Buffer of 1 — only the first winner is accepted
+	winnerCh := make(chan *FreeProxy, 1)
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				// Respect cancellation before picking a new proxy
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				proxy, ok := defaultPool.pickRandom(targetURL, param.CategoryCode)
+				if !ok {
+					return // pool empty for this worker
+				}
+
+				// Pass ctx so in-flight HTTP/WS requests cancel when winner found
+				if validateProxyCtx(ctx, proxy, targetURL) {
+					select {
+					case winnerCh <- proxy:
+						cancel() // signal all other workers to stop
+					default:
+						// Another worker already won; this proxy is already removed
+						// from pool — it gets discarded (acceptable for GetProxy)
+					}
+					return
+				}
+			}
+		}()
 	}
 
-	return nil, fmt.Errorf("no working proxy found (pool exhausted)")
+	// Close done channel when all workers finish
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneCh)
+	}()
+
+	select {
+	case proxy := <-winnerCh:
+		// Drain remaining workers (they're already stopping via ctx)
+		<-doneCh
+		return proxy, nil
+	case <-doneCh:
+		// All workers done — check winner channel one last time to avoid
+		// a race where winner sent after doneCh closed
+		select {
+		case proxy := <-winnerCh:
+			return proxy, nil
+		default:
+		}
+		return nil, fmt.Errorf("no working proxy found (all %d workers exhausted)", n)
+	}
 }
 
-// GetProxyList returns all currently cached proxies without validating them.
+// GetProxyList returns a snapshot of the current pool (not validated).
 func GetProxyList(param FreeProxyParameter) ([]FreeProxy, error) {
 	targetURL := param.getTargetURL()
 
