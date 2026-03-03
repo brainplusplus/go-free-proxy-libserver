@@ -2,3 +2,8 @@
 *.exe
 *.out
 vendor/
+server
+.claude
+CLAUDE.md
+GEMINI.md
+overview.md
