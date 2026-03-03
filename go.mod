@@ -1,4 +1,4 @@
-module github.com/yourusername/freeproxy
+module github.com/brainplusplus/go-free-proxy-libserver
 
 go 1.24.1
 

@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/gofiber/fiber/v2"
 
-	freeproxy "github.com/yourusername/freeproxy"
+	freeproxy "github.com/brainplusplus/go-free-proxy-libserver"
 )
 
 // ProxyResponse wraps a single proxy result.

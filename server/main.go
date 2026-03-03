@@ -14,7 +14,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/joho/godotenv"
 
-	freeproxy "github.com/yourusername/freeproxy"
+	freeproxy "github.com/brainplusplus/go-free-proxy-libserver"
 )
 
 func main() {
