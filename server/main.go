@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -15,10 +16,18 @@ import (
 	"github.com/joho/godotenv"
 
 	freeproxy "github.com/brainplusplus/go-free-proxy-libserver"
+	"github.com/brainplusplus/go-free-proxy-libserver/util"
 )
 
 func main() {
 	_ = godotenv.Load()
+
+	port := util.GetPortFromEnv(15000)
+
+	// Ensure port is available (kills existing process if needed)
+	if err := util.EnsureAvailable(port); err != nil {
+		log.Fatalf("Error: %v", err)
+	}
 
 	if v := os.Getenv("TIME_EXPIRED"); v != "" {
 		secs, err := strconv.Atoi(v)
@@ -60,19 +69,14 @@ func main() {
 		true,
 	)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	// Graceful shutdown (Fix 6)
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
-		log.Printf("Server running on http://localhost:%s", port)
-		log.Printf("Swagger UI: http://localhost:%s/swagger", port)
-		if err := app.Listen(":" + port); err != nil {
+		log.Printf("Server running on http://localhost:%d", port)
+		log.Printf("Swagger UI: http://localhost:%d/swagger", port)
+		if err := app.Listen(fmt.Sprintf(":%d", port)); err != nil {
 			log.Printf("Server error: %v", err)
 		}
 	}()

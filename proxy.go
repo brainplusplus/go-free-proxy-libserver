@@ -29,6 +29,7 @@ type FreeProxy struct {
 	Scheme       string    `json:"scheme"`
 	IP           string    `json:"ip"`
 	Port         int       `json:"port"`
+	ProxyUrl     string    `json:"proxy_url"`
 	Username     string    `json:"username,omitempty"`
 	Password     string    `json:"password,omitempty"`
 	CategoryCode string    `json:"category_code"`
@@ -57,6 +58,10 @@ type FreeProxyParameter struct {
 func (p FreeProxyParameter) getTargetURL() string {
 	if p.TargetUrl == "" {
 		return DefaultTargetURL
+	}
+	// Add https scheme if missing
+	if !strings.Contains(p.TargetUrl, "://") {
+		return "https://" + p.TargetUrl
 	}
 	return p.TargetUrl
 }

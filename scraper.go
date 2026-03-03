@@ -77,7 +77,7 @@ func scrape(categoryCode string) ([]FreeProxy, error) {
 		isElite := strings.Contains(anonymity, "elite")
 		isAnon := isElite || strings.Contains(anonymity, "anonymous")
 
-		proxies = append(proxies, FreeProxy{
+		proxy := FreeProxy{
 			Scheme:       scheme,
 			IP:           ip,
 			Port:         port,
@@ -89,7 +89,9 @@ func scrape(categoryCode string) ([]FreeProxy, error) {
 			Google:       googleStr == "yes",
 			HTTPS:        isHTTPS,
 			LastChecked:  parseLastChecked(lastCheckedStr),
-		})
+		}
+		proxy.ProxyUrl = proxy.ProxyURL()
+		proxies = append(proxies, proxy)
 	})
 
 	return proxies, nil

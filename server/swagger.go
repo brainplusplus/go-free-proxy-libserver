@@ -102,7 +102,7 @@ func swaggerSpec() map[string]interface{} {
 						param["description"] = "Filter by category. Omit for all categories."
 					}
 					if name == "target_url" {
-						param["description"] = "Target URL to test/pool key. Supports http, https, ws, wss. Default: https://example.com"
+						param["description"] = "Target URL to test/pool key. Supports http, https, ws, wss. Default: http://httpbin.org/get"
 					}
 
 					parameters = append(parameters, param)
