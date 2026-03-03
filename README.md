@@ -70,12 +70,12 @@ func main() {
     // Get a single validated proxy
     proxy, err := freeproxy.GetProxy(freeproxy.FreeProxyParameter{
         CategoryCode: "US",  // Optional: EN, UK, US, SSL
-        TargetUrl:    "https://api.example.com",  // Optional: default is https://example.com
+        TargetUrl:    "hhttp://httpbin.org/get",  // Optional: default is http://httpbin.org/get
     })
     if err != nil {
         panic(err)
     }
-    fmt.Printf("Working proxy: %s\n", proxy.ProxyURL())
+    fmt.Printf("Working proxy: %s\n", proxy.ProxyUrl)
 
     // Get list of all cached proxies (not validated)
     list, err := freeproxy.GetProxyList(freeproxy.FreeProxyParameter{
@@ -159,6 +159,7 @@ curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/get?target_url
     "scheme": "http",
     "ip": "192.168.1.1",
     "port": 8080,
+    "proxy_url": "http://192.168.1.1:8080",
     "category_code": "US",
     "country_code": "US",
     "country_name": "United States",
@@ -222,7 +223,8 @@ Environment variables (`.env` file):
 |----------|---------|-------------|
 | `API_KEY` | *(empty)* | API key for authentication. Empty = no auth |
 | `TIME_EXPIRED` | `1800` | Pool TTL in seconds (default: 30 min) |
-| `PORT` | `8080` | Server port |
+| `PORT` | `15000` | Server port |
+| `PROXY_TIMEOUT` | `3` | Proxy validation timeout in seconds (per request) |
 
 ---
 

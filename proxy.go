@@ -240,8 +240,8 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 					return // pool empty for this worker
 				}
 
-				// DEBUG: Log worker activity
-				slog.Debug("testing proxy", "worker", id, "ip", proxy.IP, "port", proxy.Port)
+				// Log worker activity
+				slog.Info("testing proxy", "worker", id, "ip", proxy.IP, "port", proxy.Port, "target_url", targetURL)
 
 				// Pass ctx so in-flight HTTP/WS requests cancel when winner found
 				if validateProxyCtx(ctx, proxy, targetURL) {
@@ -287,9 +287,13 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 func GetProxyList(param FreeProxyParameter) ([]FreeProxy, error) {
 	targetURL := param.getTargetURL()
 
+	slog.Info("getting proxy list", "category_code", param.CategoryCode, "target_url", targetURL)
+
 	if err := defaultPool.ensureLoaded(targetURL); err != nil {
 		return nil, fmt.Errorf("failed to load proxy pool: %w", err)
 	}
 
-	return defaultPool.getAll(targetURL, param.CategoryCode), nil
+	list := defaultPool.getAll(targetURL, param.CategoryCode)
+	slog.Info("proxy list retrieved", "count", len(list), "category_code", param.CategoryCode)
+	return list, nil
 }
