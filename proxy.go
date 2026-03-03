@@ -3,6 +3,7 @@ package freeproxy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"strings"
 	"sync"
@@ -12,7 +13,7 @@ import (
 )
 
 const (
-	DefaultTargetURL = "https://example.com"
+	DefaultTargetURL = "http://httpbin.org/get"
 	DefaultTTL       = 30 * time.Minute
 )
 
@@ -219,7 +220,7 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func() {
+		go func(id int) {
 			defer wg.Done()
 			for {
 				// Respect cancellation before picking a new proxy
@@ -234,8 +235,12 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 					return // pool empty for this worker
 				}
 
+				// DEBUG: Log worker activity
+				slog.Debug("testing proxy", "worker", id, "ip", proxy.IP, "port", proxy.Port)
+
 				// Pass ctx so in-flight HTTP/WS requests cancel when winner found
 				if validateProxyCtx(ctx, proxy, targetURL) {
+					slog.Info("found working proxy", "worker", id, "ip", proxy.IP, "port", proxy.Port)
 					select {
 					case winnerCh <- proxy:
 						cancel() // signal all other workers to stop
@@ -246,7 +251,7 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 					return
 				}
 			}
-		}()
+		}(i)
 	}
 
 	// Close done channel when all workers finish
