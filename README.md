@@ -18,6 +18,7 @@
 
 - 🚀 **High Performance** — In-memory proxy pool with O(1) swap-remove
 - 🔒 **Thread-Safe** — Mutex-protected pool with `singleflight` to prevent duplicate concurrent scrapes
+- 🌐 **Browser Fingerprinting** — Uses TLS client library to mimic Chrome 131 browser for better scraping success
 - ✅ **Validation** — HTTP and WebSocket proxy validation with configurable timeout
 - 🔄 **Auto-Refresh** — Pool automatically refreshes when empty or expired (configurable TTL)
 - 📊 **Auto Swagger** — OpenAPI 2.0 spec generated via reflection — add routes, Swagger updates automatically
@@ -46,6 +47,21 @@ go run ./server
 # Or build binary (production)
 go build -o freeproxy-server ./server
 ```
+
+---
+
+## 📚 Dependencies
+
+This library uses the following key dependencies:
+
+| Package | Purpose |
+|---------|---------|
+| `github.com/bogdanfinn/tls-client` | Browser TLS fingerprinting (Chrome 131) |
+| `github.com/bogdanfinn/fhttp` | HTTP client compatible with TLS client |
+| `github.com/bogdanfinn/websocket` | WebSocket with TLS fingerprinting |
+| `github.com/PuerkitoBio/goquery` | HTML parsing for proxy scraping |
+| `github.com/gofiber/fiber/v2` | High-performance HTTP server framework |
+| `golang.org/x/sync/singleflight` | Prevent duplicate concurrent scrapes |
 
 ---
 
