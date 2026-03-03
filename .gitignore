@@ -2,7 +2,7 @@
 *.exe
 *.out
 vendor/
-server
+freeproxy-server
 .claude
 CLAUDE.md
 GEMINI.md

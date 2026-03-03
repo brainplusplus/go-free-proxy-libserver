@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -69,9 +70,9 @@ func main() {
 		true,
 	)
 
-	// Graceful shutdown
+	// Graceful shutdown with context timeout
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT, os.Interrupt)
 
 	go func() {
 		log.Printf("Server running on http://localhost:%d", port)
@@ -82,8 +83,13 @@ func main() {
 	}()
 
 	<-quit
-	log.Println("Shutting down server...")
-	if err := app.Shutdown(); err != nil {
+	log.Println("Shutting down server (timeout: 5s)...")
+
+	// Create shutdown context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := app.ShutdownWithContext(ctx); err != nil {
 		log.Printf("Error during shutdown: %v", err)
 	}
 	log.Println("Server stopped.")
