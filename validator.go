@@ -58,6 +58,7 @@ func createTLSClient(timeout time.Duration, proxyURL string) (tls_client.HttpCli
 	}
 
 	if proxyURL != "" {
+		proxyURL = strings.Replace(proxyURL, "https", "http", -1)
 		options = append(options, tls_client.WithProxyUrl(proxyURL))
 	}
 
@@ -77,42 +78,46 @@ func validateHTTP(ctx context.Context, proxy *FreeProxy, targetURL string) bool 
 	// Create TLS client with proxy configuration
 	client, err := createTLSClient(timeout, proxy.ProxyURL())
 	if err != nil {
-		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "failed to create TLS client")
+		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "failed to create TLS client", "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 		return false
 	}
 
 	// Create request with context for cancellation
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "failed to create request")
+		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "failed to create request", "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 		return false
 	}
-	req.Header.Set("Cache-Control", "no-cache, no-store")
+	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	req.Header.Set("Pragma", "no-cache")
+	req.Header.Set("Expires", "0")
+	req.Header.Set("accept", "*/*")
+	req.Header.Set("user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
 
 	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "error", err.Error())
+		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "error", err.Error(), "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 		return false
 	}
 	defer resp.Body.Close()
 
 	success := resp.StatusCode >= 200 && resp.StatusCode < 500
 	if success {
-		slog.Info("proxy test success", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "status_code", resp.StatusCode)
+		slog.Info("proxy test success", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "status_code", resp.StatusCode, "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 	} else {
-		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "status_code", resp.StatusCode)
+		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "status_code", resp.StatusCode, "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 	}
 	return success
 }
 
 func validateWebSocket(ctx context.Context, proxy *FreeProxy, targetURL string) bool {
 	slog.Info("testing WebSocket proxy", "proxy_url", proxy.ProxyURL(), "target_url", targetURL)
-
-	proxyURL, err := url.Parse(proxy.ProxyURL())
+	proxyURLString := proxy.ProxyURL()
+	proxyURLString = strings.Replace(proxyURLString, "https", "http", -1)
+	proxyURL, err := url.Parse(proxyURLString)
 	if err != nil {
-		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "invalid proxy URL")
+		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "invalid proxy URL", "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 		return false
 	}
 
@@ -131,25 +136,28 @@ func validateWebSocket(ctx context.Context, proxy *FreeProxy, targetURL string) 
 	ch := make(chan dialResult, 1)
 	go func() {
 		conn, resp, err := dialer.Dial(targetURL, http.Header{
-			"Cache-Control": []string{"no-cache"},
+			"Cache-Control": []string{"no-cache", "no-store", "must-revalidate"},
+			"Pragma":        []string{"no-cache"},
+			"Expires":       []string{"0"},
+			"User-Agent":    []string{"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"},
 		})
 		ch <- dialResult{conn, resp, err}
 	}()
 
 	select {
 	case <-ctx.Done():
-		slog.Info("proxy test cancelled", "proxy_url", proxy.ProxyURL(), "target_url", targetURL)
+		slog.Info("proxy test cancelled", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 		return false
 	case res := <-ch:
 		if res.err != nil {
-			slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "error", res.err.Error())
+			slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "error", res.err.Error(), "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 			return false
 		}
 		defer res.conn.Close()
 		if res.resp != nil && res.resp.Body != nil {
 			defer res.resp.Body.Close()
 		}
-		slog.Info("proxy test success", "proxy_url", proxy.ProxyURL(), "target_url", targetURL)
+		slog.Info("proxy test success", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "Anonym", proxy.Anonym, "Elite", proxy.Elite, "Google", proxy.Google, "HTTPS", proxy.HTTPS)
 		return true
 	}
 }
