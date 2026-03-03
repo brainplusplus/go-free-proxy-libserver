@@ -39,6 +39,11 @@ go get github.com/brainplusplus/go-free-proxy-libserver
 ```bash
 git clone https://github.com/brainplusplus/go-free-proxy-libserver.git
 cd go-free-proxy-libserver
+
+# Run directly (development)
+go run ./server
+
+# Or build binary (production)
 go build -o freeproxy-server ./server
 ```
 
@@ -86,11 +91,32 @@ func main() {
 ### Server Usage
 
 ```bash
-# Start server
+# Run directly with go run (development)
+go run ./server
+
+# Or run built binary (production)
 ./freeproxy-server
 
 # Or with Docker
 docker compose up -d
+```
+
+#### With Custom Port/API Key
+
+```bash
+# Set custom port
+PORT=3000 go run ./server
+
+# With API key
+API_KEY=mysecretkey go run ./server
+
+# With custom TTL (seconds)
+TIME_EXPIRED=3600 go run ./server
+
+# Or use .env file
+cp .env.example .env
+# Edit .env, then:
+go run ./server
 ```
 
 ---
