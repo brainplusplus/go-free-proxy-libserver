@@ -1,6 +1,6 @@
 module github.com/brainplusplus/go-free-proxy-libserver
 
-go 1.24.1
+go 1.23
 
 require (
 	github.com/PuerkitoBio/goquery v1.9.1
