@@ -2,15 +2,18 @@ package freeproxy
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
+	http "github.com/bogdanfinn/fhttp"
+	tls_client "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
+	"github.com/bogdanfinn/websocket"
 )
 
 // getValidationTimeout reads PROXY_TIMEOUT env (in seconds, default 3s)
@@ -43,34 +46,43 @@ func isWebSocketURL(u string) bool {
 	return strings.HasPrefix(lower, "ws://") || strings.HasPrefix(lower, "wss://")
 }
 
+// createTLSClient creates a TLS client configured to mimic Chrome 131 browser.
+// If proxyURL is provided, routes traffic through the proxy.
+func createTLSClient(timeout time.Duration, proxyURL string) (tls_client.HttpClient, error) {
+	jar := tls_client.NewCookieJar()
+	options := []tls_client.HttpClientOption{
+		tls_client.WithTimeoutSeconds(int(timeout.Seconds())),
+		tls_client.WithClientProfile(profiles.Chrome_131),
+		tls_client.WithNotFollowRedirects(),
+		tls_client.WithCookieJar(jar),
+	}
+
+	if proxyURL != "" {
+		options = append(options, tls_client.WithProxyUrl(proxyURL))
+	}
+
+	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create TLS client: %w", err)
+	}
+
+	return client, nil
+}
+
 func validateHTTP(ctx context.Context, proxy *FreeProxy, targetURL string) bool {
 	slog.Info("testing HTTP proxy", "proxy_url", proxy.ProxyURL(), "target_url", targetURL)
 
-	proxyURL, err := url.Parse(proxy.ProxyURL())
+	timeout := getValidationTimeout()
+
+	// Create TLS client with proxy configuration
+	client, err := createTLSClient(timeout, proxy.ProxyURL())
 	if err != nil {
-		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "invalid proxy URL")
+		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "failed to create TLS client")
 		return false
 	}
 
-	// Combine validationTimeout and ctx so whichever fires first wins
-	reqCtx, cancel := context.WithTimeout(ctx, getValidationTimeout())
-	defer cancel()
-
-	transport := &http.Transport{
-		Proxy:             http.ProxyURL(proxyURL),
-		DisableKeepAlives: true,
-	}
-	defer transport.CloseIdleConnections()
-
-	client := &http.Client{
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		// Do NOT set Timeout here — context handles it
-	}
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
+	// Create request with context for cancellation
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "error", "failed to create request")
 		return false
@@ -78,6 +90,7 @@ func validateHTTP(ctx context.Context, proxy *FreeProxy, targetURL string) bool 
 	req.Header.Set("Cache-Control", "no-cache, no-store")
 	req.Header.Set("Pragma", "no-cache")
 
+	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Info("proxy test failed", "proxy_url", proxy.ProxyURL(), "target_url", targetURL, "error", err.Error())
