@@ -77,52 +77,74 @@ func numWorkers(categoryCode string) int {
 }
 
 type proxyPool struct {
-	mu      sync.Mutex
-	proxies map[string][]FreeProxy
-	expiry  map[string]time.Time
-	ttl     time.Duration
-	sf      singleflight.Group
+	// Global proxy storage (read-heavy, use RWMutex)
+	globalMu sync.RWMutex
+	proxies  []FreeProxy
+	expiry   time.Time
+	ttl      time.Duration
+
+	// Target-specific data (write-heavy, use Mutex)
+	targetMu                 sync.Mutex
+	targetUrlProxies         map[string][]int          // Legacy: pop-based indices
+	targetUrlWorkingProxies  map[string][]int          // New: validated indices
+	targetUrlWorkingIndex    map[string]int            // Sequence tracker
+	workingState             map[string]*workingState  // Build state + channel
+	buildVersion             int64                     // Prevent cross-cycle contamination
+
+	sf singleflight.Group
+}
+
+type workingState struct {
+	building bool
+	readyCh  chan struct{} // Closed when first proxy validated
+}
+
+func newWorkingState() *workingState {
+	return &workingState{
+		building: true,
+		readyCh:  make(chan struct{}),
+	}
+}
+
+func (ws *workingState) signalReady() {
+	if ws.building {
+		ws.building = false
+		close(ws.readyCh)
+	}
 }
 
 var defaultPool = &proxyPool{
-	proxies: make(map[string][]FreeProxy),
-	expiry:  make(map[string]time.Time),
-	ttl:     DefaultTTL,
+	proxies:                 []FreeProxy{},
+	expiry:                  time.Time{},
+	ttl:                     DefaultTTL,
+	targetUrlProxies:        make(map[string][]int),
+	targetUrlWorkingProxies: make(map[string][]int),
+	targetUrlWorkingIndex:   make(map[string]int),
+	workingState:            make(map[string]*workingState),
+	buildVersion:            0,
 }
 
 func SetTTL(d time.Duration) {
-	defaultPool.mu.Lock()
-	defer defaultPool.mu.Unlock()
+	defaultPool.globalMu.Lock()
+	defer defaultPool.globalMu.Unlock()
 	defaultPool.ttl = d
 }
 
-func (pp *proxyPool) needsRefresh(key string) bool {
-	list, ok := pp.proxies[key]
-	if !ok || len(list) == 0 {
-		return true
+// ensureProxiesLoaded ensures global proxies are loaded and not expired
+func (pp *proxyPool) ensureProxiesLoaded() error {
+	// Atomic check + load
+	pp.globalMu.RLock()
+	if time.Now().Before(pp.expiry) {
+		pp.globalMu.RUnlock()
+		return nil // Still valid
 	}
-	exp, ok := pp.expiry[key]
-	return !ok || time.Now().After(exp)
-}
+	pp.globalMu.RUnlock()
 
-func (pp *proxyPool) ensureLoaded(key string) error {
-	pp.mu.Lock()
-	needed := pp.needsRefresh(key)
-	pp.mu.Unlock()
+	// Singleflight: only one goroutine scrapes
+	_, err, _ := pp.sf.Do("scrape", func() (interface{}, error) {
+		pp.resetAll()
 
-	if !needed {
-		return nil
-	}
-
-	_, err, _ := pp.sf.Do(key, func() (interface{}, error) {
-		pp.mu.Lock()
-		if !pp.needsRefresh(key) {
-			pp.mu.Unlock()
-			return nil, nil
-		}
-		pp.mu.Unlock()
-
-		// Scrape all 4 categories concurrently
+		// Scrape all categories concurrently
 		var (
 			wg  sync.WaitGroup
 			mu  sync.Mutex
@@ -147,13 +169,13 @@ func (pp *proxyPool) ensureLoaded(key string) error {
 			return nil, fmt.Errorf("failed to scrape proxies from any source")
 		}
 
-		// Shuffle so concurrent workers pick diverse proxies
+		// Shuffle for diversity
 		rand.Shuffle(len(all), func(i, j int) { all[i], all[j] = all[j], all[i] })
 
-		pp.mu.Lock()
-		pp.proxies[key] = all
-		pp.expiry[key] = time.Now().Add(pp.ttl)
-		pp.mu.Unlock()
+		pp.globalMu.Lock()
+		pp.proxies = all
+		pp.expiry = time.Now().Add(pp.ttl)
+		pp.globalMu.Unlock()
 
 		return nil, nil
 	})
@@ -161,41 +183,75 @@ func (pp *proxyPool) ensureLoaded(key string) error {
 	return err
 }
 
-// pickRandom picks a random matching proxy and removes it from the pool (O(1) swap-remove).
+// resetAll clears all state for fresh rebuild
+func (pp *proxyPool) resetAll() {
+	// Step 1: Lock global and clear
+	pp.globalMu.Lock()
+	pp.proxies = nil
+	pp.expiry = time.Time{}
+	pp.globalMu.Unlock()
+
+	// Step 2: Lock target and full re-init
+	pp.targetMu.Lock()
+	pp.targetUrlProxies = make(map[string][]int)
+	pp.targetUrlWorkingProxies = make(map[string][]int)
+	pp.targetUrlWorkingIndex = make(map[string]int)
+	pp.workingState = make(map[string]*workingState)
+	pp.buildVersion++ // Invalidate old builds
+	pp.targetMu.Unlock()
+}
+
+// pickRandom picks a random matching proxy index and removes it from the pool (O(1) swap-remove).
 // Returns false if no matching proxy is available.
 func (pp *proxyPool) pickRandom(key, categoryCode string) (*FreeProxy, bool) {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
+	pp.targetMu.Lock()
+	defer pp.targetMu.Unlock()
 
-	list := pp.proxies[key]
-	var indices []int
-	for i, p := range list {
-		if categoryCode == "" || strings.EqualFold(p.CategoryCode, categoryCode) {
-			indices = append(indices, i)
+	list := pp.targetUrlProxies[key]
+	var matchingIndices []int
+
+	pp.globalMu.RLock()
+	for i, proxyIdx := range list {
+		if categoryCode == "" || strings.EqualFold(pp.proxies[proxyIdx].CategoryCode, categoryCode) {
+			matchingIndices = append(matchingIndices, i)
 		}
 	}
-	if len(indices) == 0 {
+	pp.globalMu.RUnlock()
+
+	if len(matchingIndices) == 0 {
 		return nil, false
 	}
 
-	idx := indices[rand.Intn(len(indices))]
-	proxy := list[idx]
+	// Pick random from matching
+	idx := matchingIndices[rand.Intn(len(matchingIndices))]
+	proxyIdx := list[idx]
+
+	pp.globalMu.RLock()
+	proxy := pp.proxies[proxyIdx]
+	pp.globalMu.RUnlock()
 
 	// O(1) swap-remove
 	list[idx] = list[len(list)-1]
-	pp.proxies[key] = list[:len(list)-1]
+	pp.targetUrlProxies[key] = list[:len(list)-1]
 
 	return &proxy, true
 }
 
 func (pp *proxyPool) getAll(key, categoryCode string) []FreeProxy {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
+	pp.targetMu.Lock()
+	indices := pp.targetUrlProxies[key]
+	pp.targetMu.Unlock()
+
+	pp.globalMu.RLock()
+	defer pp.globalMu.RUnlock()
 
 	var result []FreeProxy
-	for _, p := range pp.proxies[key] {
-		if categoryCode == "" || strings.EqualFold(p.CategoryCode, categoryCode) {
-			result = append(result, p)
+	for _, idx := range indices {
+		if idx < len(pp.proxies) {
+			p := pp.proxies[idx]
+			if categoryCode == "" || strings.EqualFold(p.CategoryCode, categoryCode) {
+				result = append(result, p)
+			}
 		}
 	}
 	return result
@@ -210,9 +266,23 @@ func (pp *proxyPool) getAll(key, categoryCode string) []FreeProxy {
 func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 	targetURL := param.getTargetURL()
 
-	if err := defaultPool.ensureLoaded(targetURL); err != nil {
+	if err := defaultPool.ensureProxiesLoaded(); err != nil {
 		return nil, fmt.Errorf("failed to load proxy pool: %w", err)
 	}
+
+	// Populate targetUrlProxies with indices if not exists
+	key := targetURL
+	defaultPool.targetMu.Lock()
+	if _, exists := defaultPool.targetUrlProxies[key]; !exists {
+		defaultPool.globalMu.RLock()
+		indices := make([]int, len(defaultPool.proxies))
+		for i := range defaultPool.proxies {
+			indices[i] = i
+		}
+		defaultPool.globalMu.RUnlock()
+		defaultPool.targetUrlProxies[key] = indices
+	}
+	defaultPool.targetMu.Unlock()
 
 	n := numWorkers(param.CategoryCode)
 
@@ -235,7 +305,7 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 				default:
 				}
 
-				proxy, ok := defaultPool.pickRandom(targetURL, param.CategoryCode)
+				proxy, ok := defaultPool.pickRandom(key, param.CategoryCode)
 				if !ok {
 					return // pool empty for this worker
 				}
@@ -289,11 +359,25 @@ func GetProxyList(param FreeProxyParameter) ([]FreeProxy, error) {
 
 	slog.Info("getting proxy list", "category_code", param.CategoryCode, "target_url", targetURL)
 
-	if err := defaultPool.ensureLoaded(targetURL); err != nil {
+	if err := defaultPool.ensureProxiesLoaded(); err != nil {
 		return nil, fmt.Errorf("failed to load proxy pool: %w", err)
 	}
 
-	list := defaultPool.getAll(targetURL, param.CategoryCode)
+	// Populate targetUrlProxies with indices if not exists
+	key := targetURL
+	defaultPool.targetMu.Lock()
+	if _, exists := defaultPool.targetUrlProxies[key]; !exists {
+		defaultPool.globalMu.RLock()
+		indices := make([]int, len(defaultPool.proxies))
+		for i := range defaultPool.proxies {
+			indices[i] = i
+		}
+		defaultPool.globalMu.RUnlock()
+		defaultPool.targetUrlProxies[key] = indices
+	}
+	defaultPool.targetMu.Unlock()
+
+	list := defaultPool.getAll(key, param.CategoryCode)
 	slog.Info("proxy list retrieved", "count", len(list), "category_code", param.CategoryCode)
 	return list, nil
 }
