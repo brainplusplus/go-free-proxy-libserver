@@ -38,11 +38,15 @@ func (pp *proxyPool) filterByCategory(categoryCode string) []int {
 
 // buildWorkingProxies validates proxies concurrently
 func (pp *proxyPool) buildWorkingProxies(key, targetURL, categoryCode string, buildVer int64) {
+	start := time.Now()
+	globalMetrics.BuildCount.Add(1)
+
 	workers := getWorkingProxyWorkers()
 	candidates := pp.filterByCategory(categoryCode)
 
 	if len(candidates) == 0 {
 		slog.Info("no proxies to validate", "target_url", targetURL, "category_code", categoryCode)
+		globalMetrics.BuildFailed.Add(1)
 		return
 	}
 
@@ -99,6 +103,17 @@ func (pp *proxyPool) buildWorkingProxies(key, targetURL, categoryCode string, bu
 			firstFound = true
 		}
 		pp.targetMu.Unlock()
+	}
+
+	// Update metrics
+	globalMetrics.ProxiesTestedTotal.Add(int64(len(candidates)))
+	globalMetrics.ProxiesValidTotal.Add(int64(validCount))
+	globalMetrics.WorkingBuildTime.Add(int64(time.Since(start)))
+
+	if validCount > 0 {
+		globalMetrics.BuildSuccess.Add(1)
+	} else {
+		globalMetrics.BuildFailed.Add(1)
 	}
 
 	slog.Info("working proxy validation complete", "target_url", targetURL, "valid_count", validCount)
@@ -164,7 +179,13 @@ func (pp *proxyPool) ensureBuildStarted(param FreeProxyParameter) chan struct{} 
 
 // GetWorkingProxy returns a pre-validated proxy using sequence (round-robin)
 func GetWorkingProxy(param FreeProxyParameter) (*FreeProxy, error) {
+	start := time.Now()
+	defer func() {
+		globalMetrics.WorkingLatencyTotal.Add(int64(time.Since(start)))
+	}()
+
 	if err := defaultPool.ensureProxiesLoaded(); err != nil {
+		globalMetrics.WorkingMisses.Add(1)
 		return nil, fmt.Errorf("failed to load proxy pool: %w", err)
 	}
 
@@ -175,6 +196,7 @@ func GetWorkingProxy(param FreeProxyParameter) (*FreeProxy, error) {
 		defaultPool.globalMu.RLock()
 		proxy := defaultPool.proxies[idx]
 		defaultPool.globalMu.RUnlock()
+		globalMetrics.WorkingHits.Add(1)
 		return &proxy, nil
 	}
 
@@ -186,10 +208,13 @@ func GetWorkingProxy(param FreeProxyParameter) (*FreeProxy, error) {
 			defaultPool.globalMu.RLock()
 			proxy := defaultPool.proxies[idx]
 			defaultPool.globalMu.RUnlock()
+			globalMetrics.WorkingHits.Add(1)
 			return &proxy, nil
 		}
+		globalMetrics.WorkingMisses.Add(1)
 		return nil, fmt.Errorf("no working proxy available")
 	case <-time.After(3 * time.Second):
+		globalMetrics.WorkingMisses.Add(1)
 		return GetProxy(param)
 	}
 }

@@ -277,9 +277,15 @@ func (pp *proxyPool) getAll(key, categoryCode string) []FreeProxy {
 // All tested proxies are removed from pool regardless of validity, so the
 // next call receives only untested proxies.
 func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
+	start := time.Now()
+	defer func() {
+		globalMetrics.LegacyLatencyTotal.Add(int64(time.Since(start)))
+	}()
+
 	targetURL := param.getTargetURL()
 
 	if err := defaultPool.ensureProxiesLoaded(); err != nil {
+		globalMetrics.LegacyMisses.Add(1)
 		return nil, fmt.Errorf("failed to load proxy pool: %w", err)
 	}
 
@@ -353,15 +359,18 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 	case proxy := <-winnerCh:
 		// Drain remaining workers (they're already stopping via ctx)
 		<-doneCh
+		globalMetrics.LegacyHits.Add(1)
 		return proxy, nil
 	case <-doneCh:
 		// All workers done — check winner channel one last time to avoid
 		// a race where winner sent after doneCh closed
 		select {
 		case proxy := <-winnerCh:
+			globalMetrics.LegacyHits.Add(1)
 			return proxy, nil
 		default:
 		}
+		globalMetrics.LegacyMisses.Add(1)
 		return nil, fmt.Errorf("no working proxy found (all %d workers exhausted)", n)
 	}
 }

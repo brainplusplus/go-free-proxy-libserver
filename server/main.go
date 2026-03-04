@@ -86,6 +86,14 @@ func main() {
 		true,
 	)
 
+	RegisterGET(api, "/metrics",
+		"Get performance metrics for legacy and working proxy systems",
+		getMetricsHandler,
+		nil,
+		MetricsResponse{},
+		true,
+	)
+
 	// Graceful shutdown with context timeout
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT, os.Interrupt)
