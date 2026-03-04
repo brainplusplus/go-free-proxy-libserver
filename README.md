@@ -141,8 +141,11 @@ go run ./server
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/v1/proxy/get` | GET | ✅ | Returns a single validated working proxy |
+| `/api/v1/proxy/get` | GET | ✅ | Returns a single validated working proxy (legacy) |
 | `/api/v1/proxy/list` | GET | ✅ | Returns all cached proxies (unvalidated) |
+| `/api/v1/proxy/get-working` | GET | ✅ | Returns a pre-validated proxy (fast response) |
+| `/api/v1/proxy/list-working` | GET | ✅ | Returns all pre-validated working proxies |
+| `/api/v1/metrics` | GET | ✅ | Returns performance metrics for benchmarking |
 | `/swagger.json` | GET | ❌ | OpenAPI 2.0 specification |
 | `/swagger` | GET | ❌ | Swagger UI (CDN-based) |
 
@@ -156,19 +159,22 @@ go run ./server
 ### Example Requests
 
 ```bash
-# Get a validated US proxy
+# Get a validated US proxy (legacy - validates on demand)
 curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/get?category_code=US"
 
-# List all SSL proxies
-curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/list?category_code=SSL"
+# Get a pre-validated proxy (fast - already validated in background)
+curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/get-working?category_code=US"
 
-# Get proxy validated against specific target
-curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/get?target_url=https://api.myapp.com"
+# List all pre-validated working proxies
+curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/list-working?category_code=SSL"
+
+# Get performance metrics
+curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/metrics"
 ```
 
 ### Response Format
 
-**GET /api/v1/proxy/get**
+**GET /api/v1/proxy/get** and **GET /api/v1/proxy/get-working**
 ```json
 {
   "data": {
@@ -188,11 +194,35 @@ curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/get?target_url
 }
 ```
 
-**GET /api/v1/proxy/list**
+**GET /api/v1/proxy/list** and **GET /api/v1/proxy/list-working**
 ```json
 {
   "data": [...],
   "total": 42
+}
+```
+
+**GET /api/v1/metrics**
+```json
+{
+  "legacy": {
+    "hits": 1000,
+    "misses": 50,
+    "avg_latency_ms": 450,
+    "success_rate": 95.2
+  },
+  "working": {
+    "hits": 2000,
+    "misses": 10,
+    "avg_latency_ms": 5,
+    "success_rate": 99.5,
+    "avg_build_time_ms": 1200
+  },
+  "validation": {
+    "total_tested": 5000,
+    "total_valid": 450,
+    "success_rate": 9.0
+  }
 }
 ```
 
@@ -241,6 +271,7 @@ Environment variables (`.env` file):
 | `TIME_EXPIRED` | `1800` | Pool TTL in seconds (default: 30 min) |
 | `PORT` | `15000` | Server port |
 | `PROXY_TIMEOUT` | `3` | Proxy validation timeout in seconds (per request) |
+| `WORKING_PROXY_WORKERS` | `50` | Concurrent workers for pre-validating working proxies |
 
 ---
 
