@@ -59,3 +59,44 @@ func getProxyListHandler(c *fiber.Ctx) error {
 		Total: len(list),
 	})
 }
+
+func getWorkingProxyHandler(c *fiber.Ctx) error {
+	param := freeproxy.FreeProxyParameter{
+		CategoryCode: c.Query("category_code"),
+		TargetUrl:    c.Query("target_url"),
+	}
+
+	proxy, err := freeproxy.GetWorkingProxy(param)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ProxyResponse{
+			Error: err.Error(),
+		})
+	}
+
+	return c.JSON(ProxyResponse{Data: proxy})
+}
+
+func getWorkingProxyListHandler(c *fiber.Ctx) error {
+	param := freeproxy.FreeProxyParameter{
+		CategoryCode: c.Query("category_code"),
+		TargetUrl:    c.Query("target_url"),
+	}
+
+	list, err := freeproxy.GetWorkingProxyList(param)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ProxyListResponse{
+			Data:  []freeproxy.FreeProxy{},
+			Total: 0,
+			Error: err.Error(),
+		})
+	}
+
+	if list == nil {
+		list = []freeproxy.FreeProxy{}
+	}
+
+	return c.JSON(ProxyListResponse{
+		Data:  list,
+		Total: len(list),
+	})
+}

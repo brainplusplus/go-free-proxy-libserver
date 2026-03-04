@@ -70,6 +70,22 @@ func main() {
 		true,
 	)
 
+	RegisterGET(api, "/proxy/get-working",
+		"Get a pre-validated working proxy (fast response)",
+		getWorkingProxyHandler,
+		freeproxy.FreeProxyParameter{},
+		ProxyResponse{},
+		true,
+	)
+
+	RegisterGET(api, "/proxy/list-working",
+		"List all pre-validated working proxies",
+		getWorkingProxyListHandler,
+		freeproxy.FreeProxyParameter{},
+		ProxyListResponse{},
+		true,
+	)
+
 	// Graceful shutdown with context timeout
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT, os.Interrupt)
