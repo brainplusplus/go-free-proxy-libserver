@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +76,17 @@ func numWorkers(categoryCode string) int {
 		return 2
 	}
 	return 2 * len(CategorySources)
+}
+
+// getWorkingProxyWorkers returns the number of concurrent workers for validating working proxies.
+// Reads from WORKING_PROXY_WORKERS env var, defaults to 50.
+func getWorkingProxyWorkers() int {
+	if v := os.Getenv("WORKING_PROXY_WORKERS"); v != "" {
+		if workers, err := strconv.Atoi(v); err == nil && workers > 0 {
+			return workers
+		}
+	}
+	return 50
 }
 
 type proxyPool struct {

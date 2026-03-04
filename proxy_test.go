@@ -1,6 +1,7 @@
 package freeproxy
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -91,5 +92,22 @@ func TestPickRandomWithIndices(t *testing.T) {
 
 	if remaining != 2 {
 		t.Errorf("expected 2 proxies remaining, got %d", remaining)
+	}
+}
+
+func TestGetWorkingProxyWorkers(t *testing.T) {
+	// Test default value
+	workers := getWorkingProxyWorkers()
+	if workers != 50 {
+		t.Errorf("expected default 50 workers, got %d", workers)
+	}
+
+	// Test with env var set
+	os.Setenv("WORKING_PROXY_WORKERS", "100")
+	defer os.Unsetenv("WORKING_PROXY_WORKERS")
+
+	workers = getWorkingProxyWorkers()
+	if workers != 100 {
+		t.Errorf("expected 100 workers from env, got %d", workers)
 	}
 }
