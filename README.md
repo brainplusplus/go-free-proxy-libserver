@@ -69,38 +69,122 @@ This library uses the following key dependencies:
 
 ### Library Usage
 
+#### Choose the right function
+
+| Need | Function | What it does |
+|------|----------|--------------|
+| One quick proxy from the cached pool | `GetProxy` | Returns one proxy immediately and removes it from the legacy target-scoped pool. No target validation is performed. |
+| Snapshot of cached proxies | `GetProxyList` | Returns the current cached pool for that target/category. No validation is performed. |
+| One proxy that has already been tested against a target | `GetWorkingProxy` | Returns a proxy from the pre-validated working pool. Use this when you need a proxy that has actually worked for `TargetUrl`. |
+| All proxies that have already been tested against a target | `GetWorkingProxyList` | Returns the current pre-validated working list for that target/category. |
+
+If you care about whether the proxy really works for a URL, prefer `GetWorkingProxy` or `GetWorkingProxyList`.
+
+#### Quick start
+
 ```go
 package main
 
 import (
-    "fmt"
-    "time"
+	"fmt"
+	"log"
+	"time"
 
-    freeproxy "github.com/brainplusplus/go-free-proxy-libserver"
+	freeproxy "github.com/brainplusplus/go-free-proxy-libserver"
 )
 
 func main() {
-    // Optional: Configure TTL (default: 30 minutes)
-    freeproxy.SetTTL(15 * time.Minute)
+	freeproxy.SetTTL(15 * time.Minute)
 
-    // Get a single validated proxy
-    proxy, err := freeproxy.GetProxy(freeproxy.FreeProxyParameter{
-        CategoryCode: "US",  // Optional: EN, UK, US, SSL
-        TargetUrl:    "hhttp://httpbin.org/get",  // Optional: default is http://httpbin.org/get
-    })
-    if err != nil {
-        panic(err)
-    }
-    fmt.Printf("Working proxy: %s\n", proxy.ProxyUrl)
+	proxy, err := freeproxy.GetProxy(freeproxy.FreeProxyParameter{
+		CategoryCode: "US",
+		TargetUrl:    "http://httpbin.org/get",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    // Get list of all cached proxies (not validated)
-    list, err := freeproxy.GetProxyList(freeproxy.FreeProxyParameter{
-        CategoryCode: "SSL",
-    })
-    if err != nil {
-        panic(err)
-    }
-    fmt.Printf("Found %d proxies\n", len(list))
+	fmt.Printf("Use this proxy next: %s\n", proxy.ProxyURL())
+}
+```
+
+#### Get one working proxy for a target
+
+Use this when your app must receive a proxy that has already succeeded against the target URL.
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	freeproxy "github.com/brainplusplus/go-free-proxy-libserver"
+)
+
+func main() {
+	proxy, err := freeproxy.GetWorkingProxy(freeproxy.FreeProxyParameter{
+		CategoryCode: "SSL",
+		TargetUrl:    "http://httpbin.org/get",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("Validated proxy: %s\n", proxy.ProxyURL())
+}
+```
+
+#### Get several pre-validated proxies
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	freeproxy "github.com/brainplusplus/go-free-proxy-libserver"
+)
+
+func main() {
+	proxies, err := freeproxy.GetWorkingProxyList(freeproxy.FreeProxyParameter{
+		CategoryCode: "US",
+		TargetUrl:    "http://httpbin.org/get",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for i, proxy := range proxies {
+		fmt.Printf("%d. %s\n", i+1, proxy.ProxyURL())
+	}
+}
+```
+
+#### Get the cached, unvalidated pool
+
+Use this when you want to inspect or manage the raw cached pool yourself.
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	freeproxy "github.com/brainplusplus/go-free-proxy-libserver"
+)
+
+func main() {
+	proxies, err := freeproxy.GetProxyList(freeproxy.FreeProxyParameter{
+		CategoryCode: "SSL",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("Cached proxies: %d\n", len(proxies))
 }
 ```
 
@@ -141,7 +225,7 @@ go run ./server
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/v1/proxy/get` | GET | ✅ | Returns a single validated working proxy (legacy) |
+| `/api/v1/proxy/get` | GET | ✅ | Returns one cached proxy and removes it from the legacy pool (no validation) |
 | `/api/v1/proxy/list` | GET | ✅ | Returns all cached proxies (unvalidated) |
 | `/api/v1/proxy/get-working` | GET | ✅ | Returns a pre-validated proxy (fast response) |
 | `/api/v1/proxy/list-working` | GET | ✅ | Returns all pre-validated working proxies |
@@ -154,18 +238,18 @@ go run ./server
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `category_code` | string | Filter by category: `EN`, `UK`, `US`, `SSL` (omit for all) |
-| `target_url` | string | Target URL to validate against (supports `http`, `https`, `ws`, `wss`) |
+| `target_url` | string | Pool/validation target. Working endpoints validate against it; legacy endpoints keep separate cached pools per target value. |
 
 ### Example Requests
 
 ```bash
-# Get a validated US proxy (legacy - validates on demand)
+# Pop one cached US proxy from the legacy pool (no validation)
 curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/get?category_code=US"
 
-# Get a pre-validated proxy (fast - already validated in background)
+# Get a pre-validated proxy for the target URL
 curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/get-working?category_code=US"
 
-# List all pre-validated working proxies
+# List all pre-validated working proxies for the target URL
 curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/proxy/list-working?category_code=SSL"
 
 # Get performance metrics
@@ -332,9 +416,9 @@ go-free-proxy-libserver/
 
 | Decision | Rationale |
 |----------|-----------|
-| Pool key = `targetURL` | Different targets need different proxy validation |
+| Pool key = `targetURL` | Keeps per-target cached pools and working-proxy validation state separate |
 | `singleflight` on load | Prevent N concurrent requests from triggering duplicate scrapes |
-| Remove proxy after test | Prevents reuse of stale proxies |
+| Legacy `GetProxy` pops/removes from pool | Repeated legacy calls consume cached proxies without re-testing |
 | Max attempts = pool size | Prevents infinite loop when all proxies are dead |
 | Registry-based Swagger | Zero maintenance, no codegen library |
 
