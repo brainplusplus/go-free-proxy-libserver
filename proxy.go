@@ -1,7 +1,6 @@
 package freeproxy
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -97,12 +96,12 @@ type proxyPool struct {
 	ttl      time.Duration
 
 	// Target-specific data (write-heavy, use Mutex)
-	targetMu                 sync.Mutex
-	targetUrlProxies         map[string][]int          // Legacy: pop-based indices
-	targetUrlWorkingProxies  map[string][]int          // New: validated indices
-	targetUrlWorkingIndex    map[string]int            // Sequence tracker
-	workingState             map[string]*workingState  // Build state + channel
-	buildVersion             int64                     // Prevent cross-cycle contamination
+	targetMu                sync.Mutex
+	targetUrlProxies        map[string][]int         // Legacy: pop-based indices
+	targetUrlWorkingProxies map[string][]int         // New: validated indices
+	targetUrlWorkingIndex   map[string]int           // Sequence tracker
+	workingState            map[string]*workingState // Build state + channel
+	buildVersion            int64                    // Prevent cross-cycle contamination
 
 	sf singleflight.Group
 }
@@ -270,12 +269,11 @@ func (pp *proxyPool) getAll(key, categoryCode string) []FreeProxy {
 	return result
 }
 
-// GetProxy validates proxies concurrently and returns the first working one.
+// GetProxy returns one cached proxy from the legacy target-scoped pool.
 //
-// Workers: 2 per category (if categoryCode empty → 2×4=8 workers, else 2).
-// First valid proxy wins → context cancels remaining workers immediately.
-// All tested proxies are removed from pool regardless of validity, so the
-// next call receives only untested proxies.
+// The returned proxy is removed from the underlying pool bookkeeping, so
+// repeated calls continue consuming the cached pool for the same target key.
+// Use GetWorkingProxy when you need a proxy validated against TargetUrl.
 func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 	start := time.Now()
 	defer func() {
@@ -303,76 +301,14 @@ func GetProxy(param FreeProxyParameter) (*FreeProxy, error) {
 	}
 	defaultPool.targetMu.Unlock()
 
-	n := numWorkers(param.CategoryCode)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Buffer of 1 — only the first winner is accepted
-	winnerCh := make(chan *FreeProxy, 1)
-
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			for {
-				// Respect cancellation before picking a new proxy
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-
-				proxy, ok := defaultPool.pickRandom(key, param.CategoryCode)
-				if !ok {
-					return // pool empty for this worker
-				}
-
-				// Log worker activity
-				slog.Info("testing proxy", "worker", id, "ip", proxy.IP, "port", proxy.Port, "target_url", targetURL)
-
-				// Pass ctx so in-flight HTTP/WS requests cancel when winner found
-				if validateProxyCtx(ctx, proxy, targetURL) {
-					slog.Info("found working proxy", "worker", id, "ip", proxy.IP, "port", proxy.Port)
-					select {
-					case winnerCh <- proxy:
-						cancel() // signal all other workers to stop
-					default:
-						// Another worker already won; this proxy is already removed
-						// from pool — it gets discarded (acceptable for GetProxy)
-					}
-					return
-				}
-			}
-		}(i)
-	}
-
-	// Close done channel when all workers finish
-	doneCh := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(doneCh)
-	}()
-
-	select {
-	case proxy := <-winnerCh:
-		// Drain remaining workers (they're already stopping via ctx)
-		<-doneCh
-		globalMetrics.LegacyHits.Add(1)
-		return proxy, nil
-	case <-doneCh:
-		// All workers done — check winner channel one last time to avoid
-		// a race where winner sent after doneCh closed
-		select {
-		case proxy := <-winnerCh:
-			globalMetrics.LegacyHits.Add(1)
-			return proxy, nil
-		default:
-		}
+	proxy, ok := defaultPool.pickRandom(key, param.CategoryCode)
+	if !ok {
 		globalMetrics.LegacyMisses.Add(1)
-		return nil, fmt.Errorf("no working proxy found (all %d workers exhausted)", n)
+		return nil, fmt.Errorf("no proxy available for target %q", targetURL)
 	}
+
+	globalMetrics.LegacyHits.Add(1)
+	return proxy, nil
 }
 
 // GetProxyList returns a snapshot of the current pool (not validated).
