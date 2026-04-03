@@ -23,7 +23,7 @@ import (
 func main() {
 	_ = godotenv.Load()
 
-	port := util.GetPortFromEnv(15000)
+	port := util.GetPortFromEnv(8080)
 
 	// Ensure port is available (kills existing process if needed)
 	if err := util.EnsureAvailable(port); err != nil {
