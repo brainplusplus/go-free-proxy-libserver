@@ -23,16 +23,17 @@ import (
 func main() {
 	_ = godotenv.Load()
 
+	// ✅ Use PORT from environment (EasyPanel compatible)
 	port := util.GetPortFromEnv(8080)
 
-	// Ensure port is available (kills existing process if needed)
+	// Optional: ensure port available (safe for local, ignore error in container)
 	if err := util.EnsureAvailable(port); err != nil {
-		log.Fatalf("Error: %v", err)
+		log.Printf("Warning: %v", err)
 	}
 
+	// TTL config
 	if v := os.Getenv("TIME_EXPIRED"); v != "" {
-		secs, err := strconv.Atoi(v)
-		if err == nil && secs > 0 {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
 			freeproxy.SetTTL(time.Duration(secs) * time.Second)
 		}
 	}
@@ -47,11 +48,16 @@ func main() {
 	app.Use(logger.New())
 	app.Use(cors.New())
 
-	// Swagger endpoints — no auth required
+	// ✅ Healthcheck endpoint (IMPORTANT for EasyPanel)
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	// Swagger (no auth)
 	app.Get("/swagger.json", swaggerJSONHandler)
 	app.Get("/swagger", swaggerUIHandler)
 
-	// Authenticated API routes
+	// API with auth
 	api := app.Group("/api/v1", authMiddleware(apiKey))
 
 	RegisterGET(api, "/proxy/get",
@@ -87,34 +93,36 @@ func main() {
 	)
 
 	RegisterGET(api, "/metrics",
-		"Get performance metrics for legacy and working proxy systems",
+		"Get performance metrics",
 		getMetricsHandler,
 		nil,
 		MetricsResponse{},
 		true,
 	)
 
-	// Graceful shutdown with context timeout
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT, os.Interrupt)
-
+	// ✅ Graceful shutdown handler (non-blocking)
 	go func() {
-		log.Printf("Server running on http://localhost:%d", port)
-		log.Printf("Swagger UI: http://localhost:%d/swagger", port)
-		if err := app.Listen(fmt.Sprintf(":%d", port)); err != nil {
-			log.Printf("Server error: %v", err)
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		<-quit
+
+		log.Println("Shutting down server (timeout: 5s)...")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := app.ShutdownWithContext(ctx); err != nil {
+			log.Printf("Shutdown error: %v", err)
 		}
+
+		log.Println("Server stopped.")
 	}()
 
-	<-quit
-	log.Println("Shutting down server (timeout: 5s)...")
+	// ✅ Start server (BLOCKING)
+	log.Printf("Server running on http://localhost:%d", port)
+	log.Printf("Swagger UI: http://localhost:%d/swagger", port)
 
-	// Create shutdown context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := app.ShutdownWithContext(ctx); err != nil {
-		log.Printf("Error during shutdown: %v", err)
+	if err := app.Listen(fmt.Sprintf(":%d", port)); err != nil {
+		log.Fatalf("Server failed: %v", err)
 	}
-	log.Println("Server stopped.")
 }
